@@ -1,47 +1,36 @@
-# **PeerLink**
+# PeerLink
 
-**PeerLink** is a secure peer-to-peer (P2P) messaging application that enables real-time communication between users over encrypted SSL connections. The application allows users to register, discover other peers, and exchange messages securely in a decentralized environment.
+**PeerLink** is a secure peer-to-peer (P2P) messaging application that enables real-time communication between users over encrypted SSL connections. The application allows users to discover peers on the same network and securely exchange messages without relying on a central server.
 
-## **Features**
+## Features
 
-- **Peer Registration**: Register your peer to be discovered by others in the network  
-- **Peer Discovery**: Discover active peers in the network and initiate secure connections  
-- **Secure Communication**: Messages are sent over SSL-encrypted channels to ensure privacy and data integrity  
-- **Deregistration**: Remove yourself from the network when you disconnect  
-- **Real-Time Messaging**: Send and receive messages in real-time, with no reliance on central servers
+- Peer discovery using local network broadcasts  
+- Secure SSL/TLS-encrypted real-time messaging  
+- Lightweight command-line interface  
+- Multithreaded server for concurrent peer connections  
+- Clean disconnection and peer session handling  
 
-## **Technologies Used**
+## Technologies Used
 
-- **Python**: Main programming language for both server and client  
-- **SSL/TLS**: Ensures secure communication between peers  
-- **Threading**: Enables concurrent handling of client connections
+- Python  
+- SSL/TLS  
+- UDP broadcast and TCP sockets  
+- Threading  
 
-## **How It Works**
+## How It Works
 
-### Server (`server.py`)
-- Listens for incoming peer connections  
-- Registers peers and maintains a registry with timestamps  
-- Handles peer discovery requests by sharing the list of active peers  
-- Supports peer deregistration when a client disconnects
+Each instance acts as both a server and client. On startup, it broadcasts its presence and listens for other peers. Discovered peers can be connected to securely using SSL, enabling direct, encrypted chat sessions.
 
-### Client (`client.py`)
-- Registers itself with the server upon launch  
-- Discovers available peers from the server  
-- Connects to selected peers using SSL-encrypted channels  
-- Enables secure real-time messaging between peers
+## Usage
 
-## **Usage**
+1. Generate your own `cert.pem` and `key.pem` files (these are not included in the repo).  
+2. Run the script to launch your peer.  
+3. Use commands like `broadcast`, `list`, and `connect <IP>` to interact with peers.  
 
-1. **Register a Peer**: Launch the client to register with the server  
-2. **Discover Peers**: Query the server for active peers  
-3. **Connect to Peers**: Select a peer to start a secure session  
-4. **Send Messages**: Chat in real-time over an encrypted SSL connection  
-5. **Deregister**: Gracefully exit and deregister from the network
+## Security Note
 
-## **Security Note**
+SSL certificate and key files are intentionally excluded from the repository. Generate your own using tools like OpenSSL before running the application.
 
-SSL certificate and key files are not included in this repository. You need to generate your own using tools like OpenSSL.
+## Contributing
 
-## **Contributing**
-
-Contributions are welcome. Feel free to fork the repository, create a branch, and open a pull request with any improvements or bug fixes.
+Contributions are welcome. Fork the repo, make your changes, and open a pull request.
