@@ -1,36 +1,53 @@
 # PeerLink
 
-**PeerLink** is a secure peer-to-peer (P2P) messaging application that enables real-time communication between users over encrypted SSL connections. The application allows users to discover peers on the same network and securely exchange messages without relying on a central server.
+PeerLink is a secure peer to peer messaging tool. Each instance runs as both server and client, finds other peers on the local network, and exchanges messages over encrypted TLS connections with no central server involved.
 
 ## Features
 
-- Peer discovery using local network broadcasts  
-- Secure SSL/TLS-encrypted real-time messaging  
-- Lightweight command-line interface  
-- Multithreaded server for concurrent peer connections  
-- Clean disconnection and peer session handling  
+* Automatic peer discovery on the local network using UDP broadcast
+* Encrypted real time messaging over SSL/TLS
+* Fully bidirectional chat where either side can send at any time
+* One thread per connection so several peers can be handled at once
+* Length prefixed message framing so messages of any size arrive intact
+* Simple command line interface
 
-## Technologies Used
+## Technologies
 
-- Python  
-- SSL/TLS  
-- UDP broadcast and TCP sockets  
-- Threading  
+* Python standard library only
+* TCP and UDP sockets
+* SSL/TLS
+* Threading
 
 ## How It Works
 
-Each instance acts as both a server and client. On startup, it broadcasts its presence and listens for other peers. Discovered peers can be connected to securely using SSL, enabling direct, encrypted chat sessions.
+On startup each peer periodically broadcasts its presence over UDP and listens for others, building up a list of peers on the same network. Connecting to a peer opens a TLS wrapped TCP session, and a dedicated thread streams incoming messages so both sides can talk at the same time.
+
+## Setup
+
+Generate your own certificate and key inside the project folder. They are not included in the repository.
+
+```
+openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=peerlink"
+```
 
 ## Usage
 
-1. Generate your own `cert.pem` and `key.pem` files (these are not included in the repo).  
-2. Run the script to launch your peer.  
-3. Use commands like `broadcast`, `list`, and `connect <IP>` to interact with peers.  
+Start a peer.
 
-## Security Note
+```
+python3 peer.py
+```
 
-SSL certificate and key files are intentionally excluded from the repository. Generate your own using tools like OpenSSL before running the application.
+Available commands
 
-## Contributing
+* `list` shows discovered and connected peers
+* `connect <ip>` opens an encrypted session and starts chatting
+* `chat <ip>` switches to a peer you are already connected to
+* `/back` leaves the current chat and returns to the command prompt
+* `exit` quits
 
-Contributions are welcome. Fork the repo, make your changes, and open a pull request.
+Discovery runs on its own, so other peers on the same network show up within a few seconds.
+
+## Security
+
+Traffic is encrypted with TLS. Peers are not authenticated, since certificates are self signed and go unverified, so the tool is intended for trusted local networks. Certificate and key files are kept out of the repository on purpose.
