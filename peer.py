@@ -1,184 +1,243 @@
-import socket, ssl, threading, time, sys
+import os, socket, ssl, threading, time, struct, sys
 
-PORT, BROADCAST_PORT, BUFFER_SIZE = 12345, 12346, 1024
-running, chat_mode, current_chat = True, False, None
-discovered_peers = set()
+PORT = int(os.environ.get("PEER_PORT", "12345"))
+DISCOVERY_PORT = 12346
+BROADCAST_INTERVAL = 5
 
-def get_local_ip():
+peers = {}
+peers_lock = threading.Lock()
+discovered = set()
+active = None
+running = True
+
+
+def local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except:
-        return socket.gethostbyname(socket.gethostname())
-
-LOCAL_IP = get_local_ip()
-
-def create_ssl_context():
-    c = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    c.load_cert_chain("cert.pem", "key.pem")
-    c.check_hostname, c.verify_mode = False, ssl.CERT_NONE
-    return c
-
-def handle_connection(conn, addr):
-    global current_chat, chat_mode
-    try:
-        while running:
-            data = conn.recv(BUFFER_SIZE)
-            if not data: break
-            print(f"[{addr}] -> {data.decode()}")
-            try: conn.send(b"Message received")
-            except: pass
-            if chat_mode:
-                print(f"[Chat with {current_chat}] Type your message: ", end="", flush=True)
-            else:
-                print("\nCommand: ", end="", flush=True)
-    except Exception as e:
-        print(f"\n[Error] Connection with {addr} closed: {e}")
+        return s.getsockname()[0]
     finally:
-        conn.close()
-        if chat_mode and current_chat == addr:
-            chat_mode, current_chat = False, None
-            print("\nCommand: ", end="", flush=True)
+        s.close()
 
-def server_thread():
-    context = create_ssl_context()
+
+LOCAL_IP = local_ip()
+
+
+def send_msg(conn, text):
+    data = text.encode()
+    conn.sendall(struct.pack(">I", len(data)) + data)
+
+
+def recv_exact(conn, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = conn.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf += chunk
+    return buf
+
+
+def recv_msg(conn):
+    header = recv_exact(conn, 4)
+    if header is None:
+        return None
+    (length,) = struct.unpack(">I", header)
+    body = recv_exact(conn, length)
+    return body.decode() if body is not None else None
+
+
+def register(conn, ip):
+    with peers_lock:
+        peers[ip] = conn
+
+
+def unregister(ip):
+    with peers_lock:
+        conn = peers.pop(ip, None)
+    if conn:
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+
+def prompt():
+    sys.stdout.write("> ")
+    sys.stdout.flush()
+
+
+def reader(conn, ip):
+    while running:
+        try:
+            msg = recv_msg(conn)
+        except OSError:
+            break
+        if msg is None:
+            break
+        sys.stdout.write(f"\n[{ip}] {msg}\n")
+        prompt()
+    unregister(ip)
+    if running:
+        sys.stdout.write(f"\n[system] {ip} disconnected\n")
+        prompt()
+
+
+def server_loop():
+    ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ctx.load_cert_chain("cert.pem", "key.pem")
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("0.0.0.0", PORT))
+    s.listen(5)
+    while running:
+        s.settimeout(1)
+        try:
+            raw, addr = s.accept()
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        try:
+            conn = ctx.wrap_socket(raw, server_side=True)
+        except ssl.SSLError:
+            raw.close()
+            continue
+        ip = addr[0]
+        register(conn, ip)
+        threading.Thread(target=reader, args=(conn, ip), daemon=True).start()
+        sys.stdout.write(f"\n[system] {ip} connected\n")
+        prompt()
+    s.close()
+
+
+def connect(ip, port=None):
+    global active
+    if port is None:
+        port = PORT
+    with peers_lock:
+        if ip in peers:
+            active = ip
+            print(f"[system] already connected to {ip}")
+            return
+    ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
     try:
-        s.bind(('0.0.0.0', PORT))
-        s.listen(5)
-        print(f"[System] Listening on port {PORT}")
-        while running:
-            try:
-                s.settimeout(1)
-                conn, addr = s.accept()
-                conn = context.wrap_socket(conn, server_side=True)
-                print(f"\n[System] Connection from {addr[0]}")
-                threading.Thread(target=handle_connection, args=(conn, addr[0]), daemon=True).start()
-            except socket.timeout:
-                continue
-    except Exception as e:
-        print(f"[Error] Server error: {e}")
-    finally:
-        s.close()
+        raw = socket.create_connection((ip, port), timeout=5)
+        conn = ctx.wrap_socket(raw, server_hostname=ip)
+    except OSError as e:
+        print(f"[system] could not connect to {ip}: {e}")
+        return
+    register(conn, ip)
+    threading.Thread(target=reader, args=(conn, ip), daemon=True).start()
+    active = ip
+    print(f"[system] connected to {ip} — start typing, /back to return")
 
-def connect_to_peer(ip):
-    global current_chat, chat_mode
-    try:
-        ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-        ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
-        sock = socket.create_connection((ip, PORT), timeout=5)
-        conn = ctx.wrap_socket(sock, server_hostname=ip)
-        print(f"[System] Connected to {ip}")
-        current_chat, chat_mode = ip, True
 
-        while running and chat_mode:
-            msg = input(f"[Chat with {ip}] Type your message: ")
-            if msg.lower() in ('exit', 'quit', 'bye', '/exit', '/quit', '/bye'):
-                break
-            try:
-                conn.send(msg.encode())
-                reply = conn.recv(BUFFER_SIZE).decode()
-                print(f"[{ip}] -> {reply}")
-            except:
-                break
-    except Exception as e:
-        print(f"[Error] Could not connect to {ip}: {e}")
-    finally:
-        try: conn.close()
-        except: pass
-        if chat_mode and current_chat == ip:
-            chat_mode, current_chat = False, None
-            print("\nCommand: ", end="", flush=True)
-
-def broadcast_presence():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+def broadcaster():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    try:
-        s.sendto(f"PEER:{LOCAL_IP}".encode(), ('<broadcast>', BROADCAST_PORT))
-        print(f"[System] Broadcast sent: {LOCAL_IP}")
-    except Exception as e:
-        print(f"[Error] Broadcast failed: {e}")
-    finally:
-        s.close()
+    while running:
+        try:
+            s.sendto(f"PEER:{LOCAL_IP}".encode(), ("<broadcast>", DISCOVERY_PORT))
+        except OSError:
+            pass
+        time.sleep(BROADCAST_INTERVAL)
+    s.close()
 
-def listen_for_broadcasts():
-    global discovered_peers
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+
+def discovery_listener():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try:
-        s.bind(('', BROADCAST_PORT))
-        print(f"[System] Listening for broadcasts on {BROADCAST_PORT}")
-        while running:
-            try:
-                s.settimeout(1.0)
-                data, addr = s.recvfrom(BUFFER_SIZE)
-                msg = data.decode()
-                if msg.startswith("PEER:"):
-                    peer_ip = msg[5:]
-                    if peer_ip != LOCAL_IP and peer_ip not in discovered_peers:
-                        discovered_peers.add(peer_ip)
-                        print(f"\n[System] Discovered: {peer_ip}")
-                        print("Command: ", end="", flush=True)
-            except socket.timeout:
-                continue
-    except Exception as e:
-        print(f"[Error] Broadcast listen error: {e}")
-    finally:
-        s.close()
+    s.bind(("", DISCOVERY_PORT))
+    while running:
+        s.settimeout(1)
+        try:
+            data, addr = s.recvfrom(1024)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        msg = data.decode(errors="ignore")
+        if msg.startswith("PEER:"):
+            ip = msg[5:]
+            if ip != LOCAL_IP and ip not in discovered:
+                discovered.add(ip)
+                sys.stdout.write(f"\n[system] discovered {ip}\n")
+                prompt()
+    s.close()
 
-def show_help():
-    print("\n=== COMMANDS ===")
-    print("connect <IP> - Start chat")
-    print("list         - Show peers")
-    print("broadcast    - Discover peers")
-    print("exit         - Quit")
-    print("help         - Help\n")
 
 def main():
-    global running
-    print("\n=== P2P SECURE MESSAGING SYSTEM ===")
-    print(f"Your IP: {LOCAL_IP}\nType 'help' for commands")
+    global running, active
+    print("PeerLink — encrypted P2P chat")
+    print(f"your ip: {LOCAL_IP}")
+    print("commands: list | connect <ip> | chat <ip> | /back | help | exit")
 
-    threading.Thread(target=server_thread, daemon=True).start()
-    threading.Thread(target=listen_for_broadcasts, daemon=True).start()
+    threading.Thread(target=server_loop, daemon=True).start()
+    threading.Thread(target=broadcaster, daemon=True).start()
+    threading.Thread(target=discovery_listener, daemon=True).start()
 
     while running:
-        if not chat_mode:
+        try:
+            line = input("> ")
+        except (EOFError, KeyboardInterrupt):
+            break
+
+        if active is not None:
+            if line == "/back":
+                active = None
+                continue
+            with peers_lock:
+                conn = peers.get(active)
+            if conn is None:
+                print(f"[system] {active} is no longer connected")
+                active = None
+                continue
             try:
-                cmd = input("\nCommand: ").strip().lower()
-                if cmd == 'exit':
-                    running = False
-                    break
-                elif cmd == 'help':
-                    show_help()
-                elif cmd == 'broadcast':
-                    broadcast_presence()
-                elif cmd == 'list':
-                    if discovered_peers:
-                        print("\n=== DISCOVERED PEERS ===")
-                        for i, p in enumerate(discovered_peers, 1):
-                            print(f"{i}. {p}")
-                        print("========================")
-                    else:
-                        print("[System] No peers discovered")
-                elif cmd.startswith('connect '):
-                    ip = cmd.split(' ', 1)[1].strip()
-                    if ip:
-                        threading.Thread(target=connect_to_peer, args=(ip,), daemon=True).start()
-                    else:
-                        print("[Error] Specify an IP")
-                else:
-                    print("[Error] Unknown command")
-            except KeyboardInterrupt:
-                running = False
-                break
-            except Exception as e:
-                print(f"[Error] {e}")
-    print("[System] Shutting down...")
+                send_msg(conn, line)
+            except OSError:
+                print(f"[system] failed to send to {active}")
+                unregister(active)
+                active = None
+            continue
+
+        parts = line.split(maxsplit=1)
+        if not parts:
+            continue
+        cmd = parts[0]
+        if cmd == "exit":
+            break
+        elif cmd == "help":
+            print("list | connect <ip> | chat <ip> | /back | exit")
+        elif cmd == "list":
+            with peers_lock:
+                conn_ips = sorted(peers)
+            print("discovered:", ", ".join(sorted(discovered)) or "none")
+            print("connected: ", ", ".join(conn_ips) or "none")
+        elif cmd == "connect" and len(parts) > 1:
+            target = parts[1].strip()
+            if ":" in target:
+                host, _, p = target.partition(":")
+                connect(host.strip(), int(p))
+            else:
+                connect(target)
+        elif cmd == "chat" and len(parts) > 1:
+            ip = parts[1].strip()
+            with peers_lock:
+                ok = ip in peers
+            if ok:
+                active = ip
+                print(f"[system] chatting with {ip} — /back to return")
+            else:
+                print(f"[system] not connected to {ip}")
+        else:
+            print("[system] unknown command")
+
+    running = False
+    print("\n[system] shutting down")
+
 
 if __name__ == "__main__":
     main()
